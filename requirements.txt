@@ -1,0 +1,12 @@
+# Space / laptop
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+fastapi>=0.110
+uvicorn>=0.29
+huggingface_hub>=0.30
+tzdata>=2024.1
+# Optional, only if a store blocks plain requests (install Chromium with `playwright install chromium`):
+# playwright>=1.45
+# Optional, TLS/browser impersonation backend (settings.fetch_backend: {"store": "impersonate"}):
+# curl_cffi>=0.7

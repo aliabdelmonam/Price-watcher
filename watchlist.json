@@ -1,0 +1,35 @@
+{
+  "settings": {
+    "interval_seconds": 300,
+    "search_interval_seconds": 300,
+    "burst_interval_seconds": 60,
+    "jitter_seconds": 30,
+    "burst_windows": [
+      "23:50-01:30",
+      "11:50-12:30"
+    ],
+    "timezone": "Africa/Cairo",
+    "store_discount_percent": 10,
+    "drop_percent_alert": 15,
+    "require_real_discount": false,
+    "deeper_drop_percent": 5,
+    "repeat_after_hours": 24,
+    "notify_deal_ended": false,
+    "exclude_words": [],
+    "fx_rates": {},
+    "fetch_backend": {}
+  },
+  "sites": [
+    "https://www.noon.com/egypt-en/",
+    "https://www.amazon.eg/",
+    "https://www.jumia.com.eg/"
+  ],
+  "items": [
+    {
+      "name": "Soundcore R60i NC",
+      "priority": "normal",
+      "enabled": true,
+      "notes": "example item; Notion Watchlist takes over when configured"
+    }
+  ]
+}

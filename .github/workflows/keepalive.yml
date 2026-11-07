@@ -1,0 +1,30 @@
+name: keepalive
+
+on:
+  schedule:
+    - cron: "17 * * * *"   # every hour at :17 (avoid :00, the busiest minute)
+  workflow_dispatch: {}     # lets you run it by hand
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --quiet huggingface_hub requests
+      - run: python scripts/watchdog.py
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPACE_ID: ${{ vars.SPACE_ID }}
+          SPACE_URL: ${{ vars.SPACE_URL }}

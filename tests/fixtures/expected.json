@@ -1,0 +1,83 @@
+{
+  "synthetic_amazon_eg.html": {
+    "store": "amazon_eg",
+    "url": "https://www.amazon.eg/dp/B09XS7JWHH",
+    "ok": true,
+    "price": 5999,
+    "list_price": 8499,
+    "in_stock": true,
+    "seller": "Amazon.eg"
+  },
+  "synthetic_amazon_eg_oos.html": {
+    "store": "amazon_eg",
+    "url": "https://www.amazon.eg/dp/B09XS7JWHH",
+    "ok": true,
+    "price": null,
+    "in_stock": false
+  },
+  "synthetic_amazon_eg_ar.html": {
+    "store": "amazon_eg",
+    "url": "https://www.amazon.eg/dp/B09XS7JWHH",
+    "ok": true,
+    "price": 5999,
+    "in_stock": true,
+    "seller": "Electro Store EG"
+  },
+  "synthetic_amazon_eg_captcha.html": {
+    "store": "amazon_eg",
+    "url": "https://www.amazon.eg/dp/B09XS7JWHH",
+    "ok": false
+  },
+  "synthetic_amazon_eg_hidden_input.html": {
+    "store": "amazon_eg",
+    "url": "https://www.amazon.eg/dp/B0AAAAAAAA",
+    "ok": true,
+    "price": 1249.5,
+    "in_stock": true
+  },
+  "synthetic_noon.html": {
+    "store": "noon",
+    "url": "https://www.noon.com/egypt-en/sony-wh-1000xm5/N53346840A/p/?o=bbb222",
+    "ok": true,
+    "price": 5999,
+    "list_price": 8499,
+    "in_stock": true,
+    "seller": "noon"
+  },
+  "synthetic_noon_rsc.html": {
+    "store": "noon",
+    "url": "https://www.noon.com/egypt-en/jbl-flip-6/N70000001A/p/",
+    "ok": true,
+    "price": 4999,
+    "in_stock": false
+  },
+  "synthetic_jumia.html": {
+    "store": "jumia",
+    "url": "https://www.jumia.com.eg/xiaomi-redmi-note-13-123456789.html",
+    "ok": true,
+    "price": 9499,
+    "list_price": 12999,
+    "in_stock": true,
+    "seller": "Xiaomi Official Store"
+  },
+  "synthetic_jumia_oos.html": {
+    "store": "jumia",
+    "url": "https://www.jumia.com.eg/philips-air-fryer-555555.html",
+    "ok": true,
+    "in_stock": false
+  },
+  "synthetic_shopify.html": {
+    "store": "shop.example.com",
+    "url": "https://shop.example.com/products/am90?variant=222",
+    "ok": true,
+    "price": 4900,
+    "in_stock": false
+  },
+  "synthetic_microdata.html": {
+    "store": "kettles.example",
+    "url": "https://kettles.example/p/kettle",
+    "ok": true,
+    "price": 1450,
+    "in_stock": true
+  }
+}
