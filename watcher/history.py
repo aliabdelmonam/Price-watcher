@@ -18,7 +18,8 @@ from .models import Reading
 
 log = logging.getLogger("watcher.history")
 
-FIELDS = ["timestamp_utc", "item_id", "store", "price", "list_price", "in_stock", "seller", "ok", "error"]
+FIELDS = ["timestamp_utc", "item_id", "store", "price", "list_price", "in_stock", "seller", "ok", "error", "url"]
+# "url": in search mode, the listing that was picked (shows when a site switches listings)
 
 
 def iso_utc(ts: float) -> str:
@@ -47,7 +48,7 @@ class History:
         day = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
         return self.dir / f"{self.running_on}-{day}.csv"
 
-    def add(self, ts: float, item_id: str, store: str, reading: Reading) -> None:
+    def add(self, ts: float, item_id: str, store: str, reading: Reading, url: str = "") -> None:
         self._buffer.append((self.path_for(ts), {
             "timestamp_utc": iso_utc(ts),
             "item_id": item_id,
@@ -58,6 +59,7 @@ class History:
             "seller": (reading.seller or "").replace("\n", " "),
             "ok": "1" if reading.ok else "0",
             "error": (reading.error or "")[:200],
+            "url": url or "",
         }))
 
     def flush(self) -> None:
@@ -69,14 +71,23 @@ class History:
         for path, row in self._buffer:
             by_file.setdefault(path, []).append(row)
         for path, rows in by_file.items():
-            new = not path.exists()
+            new = not path.exists() or path.stat().st_size == 0
+            columns = FIELDS if new else (self._columns(path) or FIELDS)  # a file keeps its own columns
             with path.open("a", newline="", encoding="utf-8") as fh:
-                writer = csv.DictWriter(fh, fieldnames=FIELDS)
+                writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
                 if new:
                     writer.writeheader()
                 writer.writerows(rows)
             self.dirty.add(path)
         self._buffer.clear()
+
+    @staticmethod
+    def _columns(path: Path) -> list[str] | None:
+        try:
+            with path.open(newline="", encoding="utf-8") as fh:
+                return next(csv.reader(fh), None)
+        except (OSError, csv.Error):
+            return None
 
     def changed_since(self, ts: float) -> set:
         """This device's history files written since `ts` (scheduled --once runs sync them later)."""

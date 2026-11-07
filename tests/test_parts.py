@@ -162,3 +162,51 @@ def test_watchdog(monkeypatch):
     assert wd.main(api) == 1 and api.restarts == 1 and "stuck" in messages[-1]
     api = FakeApi("RUNTIME_ERROR")
     assert wd.main(api) == 1 and api.restarts == 1 and "crashed" in messages[-1]
+
+
+def test_history_files_keep_their_columns_and_new_ones_record_the_listing(tmp_path):
+    import csv as _csv
+    from datetime import datetime as _dt, timezone as _tz
+
+    from watcher.history import History
+    from watcher.models import Reading
+
+    folder = tmp_path / "history"
+    folder.mkdir()
+    old = folder / "laptop-2026-11-07.csv"
+    old.write_text("timestamp_utc,item_id,store,price,list_price,in_stock,seller,ok,error\r\n", encoding="utf-8")
+    history = History(tmp_path, "laptop")
+    ts = _dt(2026, 11, 7, 12, tzinfo=_tz.utc).timestamp()
+    reading = Reading(price=1355, list_price=1800, in_stock=True, ok=True)
+    history.add(ts, "s-x@jumia", "jumia", reading, url="https://www.jumia.com.eg/x-1.html")
+    history.add(ts + 86400, "s-x@jumia", "jumia", reading, url="https://www.jumia.com.eg/x-1.html")
+    history.flush()
+    assert [len(r) for r in _csv.reader(old.open(newline="", encoding="utf-8"))] == [9, 9]   # same columns
+    [row] = list(_csv.DictReader((folder / "laptop-2026-11-08.csv").open(newline="", encoding="utf-8")))
+    assert (row["price"], row["url"]) == ("1355", "https://www.jumia.com.eg/x-1.html")
+
+
+def test_watchlist_json_items_accept_names_links_and_notion_style_fields():
+    from watcher.watchlist import build_items, source_of
+
+    problems = []
+    rows = ["Soundcore R50i NC", "https://www.amazon.eg/-/en/Speaker/dp/B0TEST0001/ref=x",
+            {"Name": "Sony WH-1000XM5", "Target price": "12,000", "Sites": ["noon", "jumia"], "Must include": "xm5"},
+            {"name": "Paused one", "paused": True}, 42]
+    search, link, sony = build_items(rows, "watchlist.json", problems)
+    assert (search.name, search.is_search, source_of(search)) == ("Soundcore R50i NC", True, "watchlist.json")
+    assert (link.url, link.store) == ("https://www.amazon.eg/dp/B0TEST0001", "amazon_eg")
+    assert (sony.target_price, sony.sites, sony.must_include) == (12000, ("noon", "jumia"), "xm5")
+    assert len(problems) == 1 and "row 5" in problems[0]
+
+
+def test_quick_items_merges_every_source(tmp_path):
+    import json as _json
+
+    from helpers import make_cfg
+    from watcher.loop import quick_items
+    from watcher.watchlist import source_of
+
+    (tmp_path / "watchlist_overrides.json").write_text(_json.dumps([{"name": "Sony XM5", "url": ""}]))
+    items = quick_items(make_cfg(tmp_path, items=["Soundcore R50i NC", "soundcore r50i nc"]))
+    assert [(i.name, source_of(i)) for i in items] == [("Soundcore R50i NC", "watchlist.json"), ("Sony XM5", "/add")]

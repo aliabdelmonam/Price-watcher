@@ -85,7 +85,7 @@ def test_deal_ends_comes_back_quietly_and_is_new_after_a_day(tmp_path):
     h.fetcher.pages[A1] = amazon_page(None, stock=OOS)
     h.cycle(FIVE_MIN)
     assert h.notion.rows_for()[0]["status"] == "Sold out" and h.notion.rows_for()[0]["price"] == 5900
-    for price in (5900, 6300):                                   # back at the same price, then over target
+    for price in (5900, 6500):                                   # back at the same price, then its regular price
         set_price(h, A1, price)
         h.cycle(FIVE_MIN)
     assert len(h.tg.texts("TARGET HIT")) == 1 and h.tg.texts("DEAL ENDED") == []
@@ -300,3 +300,138 @@ def test_bad_watchlist_row_warns_once_and_again_if_it_breaks_again(tmp_path):
     h.notion.rows[0]["target_price"] = "abc"
     h.cycle(FIVE_MIN)
     assert len(h.tg.texts("not a number")) == 1
+
+
+# -------------------------------------------------------- drops and noise
+
+def test_the_stores_was_price_is_not_a_price_drop(tmp_path):
+    h = Harness(tmp_path, [row("x", amazon_url(A1))], {A1: amazon_page(1515, was=2333)})
+    h.cycle()
+    [sale] = h.tg.texts("ALREADY ON SALE")
+    assert "Why: on sale" in sale and "price drop" not in sale
+    for price in (1529.9, 1535, 1534.9, 1534.7):                 # what amazon_eg did on Nov 7
+        set_price(h, A1, price, was=2333)
+        h.cycle(FIVE_MIN)
+    [rec] = h.notion.rows_for()
+    assert (rec["status"], rec["why"], rec["previous_price"]) == ("Active", ["ON SALE"], None)
+    assert [t for t in h.tg.sent if "First check" not in t] == [sale]
+    set_price(h, A1, 1535)                                       # the 'was' price is gone: the sale is over
+    h.cycle(FIVE_MIN)
+    assert h.notion.rows_for()[0]["status"] == "Ended"
+
+
+def test_small_price_wobbles_are_not_drops_and_real_drops_are(tmp_path):
+    h = Harness(tmp_path, [row("x", amazon_url(A1))], {A1: amazon_page(1535)})
+    h.cycle()
+    h.tg.sent.clear()
+    for price in (1534.9, 1534.7, 1530, 1533):
+        set_price(h, A1, price)
+        h.cycle(FIVE_MIN)
+    assert h.tg.sent == [] and h.notion.rows_for() == []
+    set_price(h, A1, 1450)                                       # 5.4% under the regular price
+    h.cycle(FIVE_MIN)
+    [drop] = h.tg.texts("PRICE DROP")
+    assert "Previous price: 1,533" in drop
+    for price in (1449, 1440):                                   # less than 1% under the alert: Notion only
+        set_price(h, A1, price)
+        h.cycle(FIVE_MIN)
+    assert h.tg.texts("EVEN LOWER") == [] and h.notion.rows_for()[0]["price"] == 1440
+    set_price(h, A1, 1400)
+    h.cycle(FIVE_MIN)
+    [lower] = h.tg.texts("EVEN LOWER")
+    assert "Down from 1,450 in the last alert" in lower
+    set_price(h, A1, 1530)                                       # about the regular price again: over
+    h.cycle(FIVE_MIN)
+    assert h.notion.rows_for()[0]["status"] == "Ended" and len(h.tg.sent) == 2
+
+
+def test_a_drop_lasts_until_the_price_recovers(tmp_path):
+    h = Harness(tmp_path, [row("x", amazon_url(A1), 6000)], {A1: amazon_page(6500)})
+    h.cycle()
+    set_price(h, A1, 5900)
+    h.cycle(FIVE_MIN)
+    set_price(h, A1, 6300)                                       # over the target, still under the regular 6,500
+    h.cycle(FIVE_MIN)
+    [rec] = h.notion.rows_for()
+    assert (rec["status"], rec["why"], rec["previous_price"]) == ("Active", ["PRICE DROP"], 6500)
+    assert len(h.tg.texts("TARGET HIT")) == 1 and h.tg.texts("EVEN LOWER") == []
+
+
+def test_saved_state_from_the_old_rules_is_repaired(tmp_path):
+    h = Harness(tmp_path, [row("x", amazon_url(A1))], {A1: amazon_page(1534.7, was=2333)}, boot=False)
+    day_ago = h.clock() - 86400
+    old = {"first_checked_at": day_ago, "last_check_at": day_ago, "last_ok_at": day_ago, "last_price": 1534.7,
+           "reference_price": 2333.0, "last_list_price": 2333.0, "last_in_stock": True, "deal_open": True,
+           "deal_started_at": day_ago, "deal_alert_price": 1515.0, "deal_reasons": ["STORE_SALE", "PRICE_DROP"]}
+    path = h.data_dir / "state" / "laptop.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"version": 1, "globals": {"first_summary_sent": True}, "items": {"x": old}}))
+    h.rt = h.new_runtime()
+    h.cycle(FIVE_MIN)
+    st = h.rt.state.items["x"]
+    assert (st.reference_price, st.deal_reasons, h.tg.sent) == (1534.7, ["STORE_SALE"], [])
+    set_price(h, A1, 1534.7)                                     # the 'was' price goes: no endless PRICE DROP
+    h.cycle(FIVE_MIN)
+    assert not h.rt.state.items["x"].deal_open
+
+
+# -------------------------------------------------- where the items come from
+
+R50 = "Soundcore R50i NC True Wireless Earbuds, Black"
+
+
+def noon_page():
+    from helpers import R60, noon_results
+    return noon_results(("N70284977V", R60, 1570, 1394.95), ("N50000000V", R50, 1100, 999))
+
+
+def test_items_from_notion_and_watchlist_json_are_both_watched(tmp_path):
+    h = Harness(tmp_path, [row("", "", None, name="Soundcore R60i NC")], {"noon.com/egypt-en/search/?q=": noon_page()},
+                sites=["https://www.noon.com/egypt-en/"], items=["Soundcore R50i NC"])
+    assert [(i.name, i.row) for i in h.rt.search_items()] == [
+        ("Soundcore R60i NC", "Watchlist row 1"), ("Soundcore R50i NC", "watchlist.json row 1")]
+    assert h.rt.watchlist_source == "Notion Watchlist (1) + watchlist.json (1)"
+    assert "Items: Soundcore R60i NC (Notion) · Soundcore R50i NC (watchlist.json)" in h.rt.startup_message()
+    h.cycle()
+    assert {"s-soundcore-r60i-nc@noon", "s-soundcore-r50i-nc@noon"} <= set(h.rt.state.items)
+    assert {r["key"] for r in h.notion.rows_for()} == {"s-soundcore-r60i-nc@noon", "s-soundcore-r50i-nc@noon"}
+
+
+def test_an_item_in_both_places_is_watched_once_with_the_notion_settings(tmp_path):
+    h = Harness(tmp_path, [row("", "", 1200, name="Soundcore R60i NC")], {}, sites=["https://www.noon.com/egypt-en/"],
+                items=[{"Name": "soundcore r60i nc", "Target price": 999}])
+    [item] = h.rt.search_items()
+    assert (item.name, item.target_price, h.rt.watchlist_source) == ("Soundcore R60i NC", 1200, "Notion Watchlist (1)")
+
+
+def test_an_empty_notion_watchlist_still_watches_watchlist_json(tmp_path):
+    h = Harness(tmp_path, [], {"noon.com/egypt-en/search/?q=": noon_page()}, sites=["https://www.noon.com/egypt-en/"],
+                items=["Soundcore R50i NC"])
+    assert [i.name for i in h.rt.search_items()] == ["Soundcore R50i NC"]   # used to watch nothing
+    h.cycle()
+    assert "s-soundcore-r50i-nc@noon" in h.rt.state.items
+
+
+def test_watchlist_json_edits_are_picked_up_without_a_restart(tmp_path):
+    import os
+
+    h = Harness(tmp_path, [], {}, sites=["https://www.noon.com/egypt-en/"], boot=False)
+    path = h.data_dir / "watchlist.json"
+    h.data_dir.mkdir(parents=True)
+
+    def write(text, step):
+        path.write_text(text, encoding="utf-8")
+        stamp = 1_800_000_000_000_000_000 + step * 1_000_000_000
+        os.utime(path, ns=(stamp, stamp))
+
+    write(json.dumps({"items": ["Soundcore R50i NC"]}), 1)
+    h.rt = h.new_runtime()
+    assert [i.name for i in h.rt.search_items()] == ["Soundcore R50i NC"]
+    write(json.dumps({"items": ["Soundcore R50i NC", {"name": "Sony WH-1000XM5", "sites": ["noon"]}]}), 2)
+    h.cycle(FIVE_MIN)
+    assert [i.name for i in h.rt.search_items()] == ["Soundcore R50i NC", "Sony WH-1000XM5"]
+    write("{ half-saved", 3)
+    h.cycle(FIVE_MIN)
+    h.cycle(FIVE_MIN)
+    assert len(h.tg.texts("not valid JSON")) == 1                       # one warning, items kept
+    assert [i.name for i in h.rt.search_items()] == ["Soundcore R50i NC", "Sony WH-1000XM5"]

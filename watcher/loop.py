@@ -18,7 +18,7 @@ from .runtime import Runtime
 from .search import Matcher, pick, search_site
 from .notion import NotionClient
 from .sites import load_sites
-from .watchlist import build_items, load_cache
+from .watchlist import Overrides, build_items, load_cache, merge_items
 
 log = logging.getLogger("watcher")
 
@@ -134,18 +134,21 @@ def verdict(reading: Reading) -> str:
 
 
 def quick_items(cfg: Config):
-    """The watchlist without starting the whole runtime (for --test, --dry-run, /test)."""
-    rows, source = None, "watchlist.json"
+    """Every item to watch, without starting the whole runtime (for --items, --test, --dry-run,
+    /test): the Notion Watchlist, watchlist.json "items" and /add, each item once."""
+    rows: list = []
     notion = NotionClient(cfg.notion_token, cfg.notion_page, timezone_name=cfg.settings.timezone)
     if notion.enabled:
         notion.site_keys = [site.key for site in load_sites(cfg.sites)[0]]
         try:
-            rows, source = notion.read_watchlist(), "Watchlist"
+            rows = notion.read_watchlist()
         except Exception as exc:
             log.warning("Notion unreachable (%s); using the saved copy", exc)
-            rows, source = load_cache(cfg.data_dir), "saved copy"
+            rows = load_cache(cfg.data_dir) or []
     problems: list[str] = []
-    items = build_items(rows if rows is not None else cfg.watchlist_items, source, problems)
+    items = merge_items(build_items(rows, "Watchlist", problems),
+                        build_items(cfg.watchlist_items, "watchlist.json", problems),
+                        build_items(Overrides(cfg.data_dir).rows(), "/add", problems))
     for problem in problems:
         log.warning("%s", problem)
     return [i for i in items if not i.url or cfg.handles_store(i.store)]

@@ -10,8 +10,8 @@ from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 from . import __version__
-from .alerts import format_alert
-from .config import Config
+from .alerts import format_alert, migrate_state
+from .config import Config, read_watchlist_file
 from .crawler import pair_id, wants
 from .fetch import Fetcher
 from .history import History, StatsBook, iso_utc
@@ -20,10 +20,10 @@ from .notify import Telegram, esc, short_title
 from .notion import NotionClient, PendingDeals, explain
 from .prices import money, pct_off
 from .search import Matcher
-from .sites import load_sites
+from .sites import apply_site_rows, load_sites
 from .state import StateStore
 from .sync import DatasetSync
-from .watchlist import Overrides, build_items, load_cache, save_cache
+from .watchlist import Overrides, build_items, load_cache, merge_items, save_cache, source_of
 
 log = logging.getLogger("watcher")
 
@@ -77,6 +77,8 @@ class Runtime:
         self._last_watchlist_load = 0.0
         self._last_rows_json = ""
         self._cache_dirty = False
+        self._file_rows: list = list(cfg.watchlist_items)  # watchlist.json "items", re-read when it changes
+        self._file_stamp: int | None = None
         self._resolved: dict[str, str] = {}
         self.retry: list[tuple[str, str | None, int]] = []
         self.started_at = self.clock()
@@ -155,6 +157,8 @@ class Runtime:
         else:
             self.restore_note = self.sync.restore()
         self.state.load()
+        if migrate_state(self.state):
+            log.info("saved deal state moved to the current deal rules")
         loaded = self.stats.load(self.history)
         log.info("history: %d readings loaded; %s", loaded, self.restore_note)
         for problem in self._site_problems:
@@ -176,8 +180,12 @@ class Runtime:
         if page:
             lines.append(f"Tracking {len(page)} product link(s): "
                          + " · ".join(f"{k} {v}" for k, v in sorted(per_store.items())))
-        if not page and not search:
-            lines.append("No items yet: add rows to your Notion Watchlist or use /add.")
+        if page or search:
+            names = [f"{item.name} ({source_of(item)})" for item in search + page]
+            more = f" and {len(names) - 12} more" if len(names) > 12 else ""
+            lines.append("Items: " + esc(" · ".join(names[:12])) + more)
+        else:
+            lines.append('No items yet: add rows to your Notion Watchlist, "items" to watchlist.json, or use /add.')
         lines.append(f"Every {self.s.search_interval_seconds / 60:g} min · burst {self.s.burst_interval_seconds:g} s "
                      f"in {esc(windows)}")
         lines.append(f"Watchlist: {esc(self.watchlist_source)} · History: {esc(self.restore_note)}")
@@ -216,40 +224,35 @@ class Runtime:
             return
         self.force_reload = False
         self._last_watchlist_load = now
-        rows, source = None, ""
+        notion_rows, notion_label = [], "Notion Watchlist"
         if self.notion.enabled:
             try:
-                rows, source = self.notion.read_watchlist(), "Notion"
-                if hasattr(self.notion, "read_sites"):
-                    site_rows = self.notion.read_sites()
-                    if site_rows:
-                        # The configured site list is the scope for this watcher. Notion
-                        # may contain stale or extra rows (e.g. Amazon US); don't search them.
-                        allowed = {site.key for site in load_sites(self.cfg.sites)[0]}
-                        site_rows = [row for row in site_rows if str(row.get("key", "")).lower() in allowed]
-                        self.sites, self._site_problems = load_sites(site_rows)
-                        self.notion.site_keys = [site.key for site in self.sites]
+                notion_rows = self.notion.read_watchlist()
                 self.clear_warning("notion-read")
-                rows_json = json.dumps(rows, sort_keys=True, default=str)
+                rows_json = json.dumps(notion_rows, sort_keys=True, default=str)
                 if rows_json != self._last_rows_json:
-                    save_cache(self.cfg.data_dir, rows)
+                    save_cache(self.cfg.data_dir, notion_rows)
                     self._last_rows_json = rows_json
                     self._cache_dirty = True
             except Exception as exc:
-                rows = load_cache(self.cfg.data_dir)
-                source = "saved copy of your Notion Watchlist"
+                notion_rows = load_cache(self.cfg.data_dir) or []
+                notion_label = "saved copy of your Notion Watchlist"
                 self.warn_once("notion-read", f"⚠️ Can't read your Notion Watchlist ({esc(str(exc)[:150])}). "
                                               f"{esc(explain(exc))} Using the last saved copy.")
-        if rows is None:
-            rows, source = self.cfg.watchlist_items, "watchlist.json"
+            else:
+                self._reload_sites()
+        # Every source is watched: the Notion Watchlist, watchlist.json "items" and /add. An item
+        # in several places is watched once, with the first source's settings.
         problems: list[str] = []
-        items = build_items(rows, "Watchlist" if "Notion" in source else source, problems, self.resolve_short)
-        ids, urls = {i.id for i in items}, {i.url for i in items if i.url}
-        names = {i.name.casefold() for i in items if i.is_search}
-        for extra in build_items(self.overrides.rows(), "/add", problems, self.resolve_short):
-            if extra.id in ids or (extra.url and extra.url in urls) or (extra.is_search and extra.name.casefold() in names):
-                continue
-            items.append(extra)
+        groups = [
+            (notion_label, build_items(notion_rows, "Watchlist", problems, self.resolve_short)),
+            ("watchlist.json", build_items(self._read_file_rows(), "watchlist.json", problems, self.resolve_short)),
+            ("/add", build_items(self.overrides.rows(), "/add", problems, self.resolve_short)),
+        ]
+        items = merge_items(*(group for _, group in groups))
+        kept = {id(item) for item in items}
+        counts = [(label, sum(id(item) in kept for item in group)) for label, group in groups]
+        source = " + ".join(f"{label} ({n})" for label, n in counts if n) or "no items"
         for item in items:
             st = self.state.items.get(item.id)
             if not item.named and st is not None and st.last_title:
@@ -262,6 +265,39 @@ class Runtime:
             self.warn_once(problem, f"⚠️ {esc(problem)}")
         self.items_all = items
         self.watchlist_source = source
+
+    def _read_file_rows(self) -> list:
+        """watchlist.json "items", read again whenever the file changes: no restart needed."""
+        path = self.cfg.watchlist_file
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            return self._file_rows
+        if stamp != self._file_stamp:
+            self._file_stamp = stamp
+            try:
+                data = read_watchlist_file(path)
+                rows = data.get("items") if isinstance(data, dict) else None
+                self._file_rows = list(rows) if isinstance(rows, list) else []
+                self.clear_warning("watchlist.json")
+            except (OSError, ValueError) as exc:
+                self.warn_once("watchlist.json", f"⚠️ {esc(str(exc))}. Still watching the items read before.")
+        return self._file_rows
+
+    def _reload_sites(self) -> None:
+        """watchlist.json "sites" decides which sites exist; the Notion Sites rows only switch them
+        on or off, so a stale row (e.g. Amazon US) is never searched and a row that doesn't match
+        exactly never drops a configured site. A Sites problem never stops the Watchlist."""
+        if not hasattr(self.notion, "read_sites"):
+            return
+        try:
+            rows = self.notion.read_sites()
+        except Exception as exc:
+            log.warning("can't read the Notion Sites database (%s); searching the watchlist.json sites", exc)
+            return
+        configured, self._site_problems = load_sites(self.cfg.sites)
+        self.sites = apply_site_rows(configured, rows)
+        self.notion.site_keys = [site.key for site in self.sites]
 
     def active_items(self) -> list[Item]:
         """Rows with a link, for the stores this device checks."""

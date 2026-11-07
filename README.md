@@ -37,24 +37,28 @@ Every 5 minutes, for each item on each site, the crawler searches, keeps the lis
 
 - **TARGET HIT:** it's at or below your `Target price`.
 - **ON SALE:** the site shows its own "was" price higher than the current price.
-- **PRICE DROP:** the current price is lower than the last saved price for that item and site. This catches sales the store doesn't label.
+- **PRICE DROP:** the price fell at least 1% (`min_drop_percent`) below its regular price on that site: the last price that wasn't a drop, never the store's own "was" price. It stays a deal until the price comes back up. This catches sales the store doesn't label.
+
+Price moves under 1% are noise (Amazon prices wobble by a few piastres), so they never send anything.
 
 Every alert also says whether the discount is **real**: compared with your own history, not the store's possibly inflated "was" price.
 
 **No repeats, by design.** Each item on each site has one deal at a time:
 
-- **Telegram:** one message when the deal starts. Another when the price falls further to a new lower price ("⬇️ EVEN LOWER").
+- **Telegram:** one message when the deal starts. Another when the price falls at least 1% below the price in the last message ("⬇️ EVEN LOWER").
 - **Notion:** one row in **Deals** per item per site, created at its first deal and then **updated in place**: price, was-price, discount, status Active / Ended / Sold out.
 - **Same deal back:** if a deal ends and returns within 24 hours at the same price, the row goes back to Active quietly, with no new message.
 - **Nothing changed:** no Notion write and no message. Running every 5 minutes for days, restarting the laptop, or running it from a scheduler never repeats anything. Even warnings are sent once.
 - **Deleted rows:** if you delete a Deals row in Notion, it stays deleted until that item has a new deal.
+- **Listing gone:** if a deal's listing is missing from a site's results 3 checks in a row, its row turns Ended (one or two misses are treated as a glitch).
+- **Two near-equal listings:** the listing tracked last time is kept unless another one is at least 1% cheaper, so they never swap back and forth.
 
 ## Project layout
 
 ```
 price-watcher/
 ├── app.py                 FastAPI for the Space: /, /health, /test, starts the loop thread
-├── run_local.py           the same loop on the laptop, plus --search, --once, --dry-run, --test
+├── run_local.py           the same loop on the laptop, plus --items, --search, --once, --dry-run, --test
 ├── watchlist.json         the sites to search and the settings
 ├── watcher/
 │   ├── crawler.py         the item × site loop
@@ -131,13 +135,27 @@ One row per product. Only **Name** is required:
 
 From Telegram: `/add soundcore r60i nc` adds a row without a target price. The watcher re-reads the Watchlist every 5 minutes. A bad row (a target that isn't a number) is skipped, and you get one ⚠️ message naming it.
 
+### Items: also in watchlist.json
+
+The items under `"items"` in `watchlist.json` are watched too, **together with** your Notion Watchlist and anything added with `/add`. An item listed in several places is watched once, with the Notion row's settings. Edits to `watchlist.json` items are picked up within 5 minutes, without a restart (a half-saved file is ignored, with one ⚠️). Each item is a name, a link, or an object with the Notion column names:
+
+```json
+"items": [
+  "Soundcore R50i NC",
+  {"name": "Sony WH-1000XM5", "target_price": 12000, "sites": ["noon", "amazon_eg"], "exclude": "case"},
+  {"url": "https://www.amazon.eg/dp/B0XXXXXXXX", "target_price": 6500, "priority": "high"}
+]
+```
+
+To stop watching an item, delete it (or set `"paused": true`) where it is listed; a Notion row is paused with its **Paused** box. `python run_local.py --items` lists every item that will be watched and where it came from, and the 🟢 startup message names them.
+
 ### What you get: the Deals database
 
 One row per item per site that has had a deal: Item, Site, **Status** (Active / Ended / Sold out), **Price**, **Previous price**, **Was** (the store's old price), **Store discount** (%), **Below usual** (% under your 14-day history), Target, Usual price, Lowest seen, **Real discount** (YES / NO / TOO EARLY), **Why** (TARGET HIT, ON SALE, PRICE DROP), In stock, Seller, Listing (the store's title), **Link**, Found, Updated. Filter on Status = Active to see what's on sale right now.
 
 ### Sites: the Sites database in Notion
 
-One row per configured store. **Name** and **URL** are required. Check **Enabled** to search a site; clear it to pause that site. **Currency** is optional and is inferred from known store URLs when possible. The initial rows are copied from `watchlist.json` the first time you run `setup_notion.py`. Enable or pause configured sites from your phone; add new sites to `watchlist.json` first. `watchlist.json` provides the local fallback if Notion is unavailable.
+One row per configured store. **Name** and **URL** are required. Check **Enabled** to search a site; clear it to pause that site. **Currency** is optional and is inferred from known store URLs when possible. The initial rows are copied from `watchlist.json` the first time you run `setup_notion.py`. Enable or pause configured sites from your phone; add new sites to `watchlist.json` first. A configured site without a Sites row is searched as configured, and a Sites row for a site that isn't in `watchlist.json` (e.g. an old Amazon US row) is ignored. Rows are matched by Key, Name or URL. `watchlist.json` provides the local fallback if Notion is unavailable.
 
 How sites work:
 
@@ -148,7 +166,13 @@ How sites work:
 
 ## 5. Go live tonight on the laptop
 
-First see what each site returns for your item and which listing would be picked:
+First check which items will be watched and where each one comes from (Notion, watchlist.json or /add):
+
+```
+python run_local.py --items
+```
+
+Then see what each site returns for your item and which listing would be picked:
 
 ```
 python run_local.py --search "soundcore r60i nc"
@@ -241,7 +265,7 @@ Drills by Nov 10:
 
 **"not listed" although the site sells it:** that site words the title differently. `--search` shows which word is `missing`; remove it from the Name.
 
-**A site shows `blocked` or `captcha`:** use its normal browser interface manually, or use an official feed/API if the retailer provides one and your account is authorized. The watcher does not solve CAPTCHAs or evade access controls. Browser rendering is available for ordinary JavaScript pages with `FETCH_BACKEND={"amazon_eg":"browser","jumia":"browser","noon":"browser_visible"}` in the local `.env`; it uses a regular Chromium browser, waits for the provider's product cards, and reports a 403 as blocked. Install it with `pip install playwright` and `playwright install chromium`. `browser_visible` opens the store page on your desktop during each search.
+**A site shows `blocked` or `captcha`:** use its normal browser interface manually, or use an official feed/API if the retailer provides one and your account is authorized. The watcher does not solve CAPTCHAs or evade access controls. Browser rendering is available for ordinary JavaScript pages with `FETCH_BACKEND={"amazon_eg":"browser","jumia":"browser","noon":"browser_visible"}` in the local `.env`; it uses a regular Chromium browser, waits for the provider's product cards, and reports a 403 as blocked. Install it with `pip install playwright` and `playwright install chromium`. `browser_visible` opens the store page on your desktop during each search; if you close that window, it opens again at the next search.
 
 ## 11. Reference
 
@@ -251,7 +275,7 @@ Drills by Nov 10:
 |---|---|
 | 🏷 ALREADY ON SALE | the first time an item is found on a site, it's already a deal |
 | 🔥 TARGET HIT / 🏷 ON SALE / 📉 PRICE DROP | a new deal starts (the headline is its main reason) |
-| ⬇️ EVEN LOWER | during a deal, the price fell below the last notified price |
+| ⬇️ EVEN LOWER | during a deal, the price fell at least 1% below the last notified price |
 | ↩️ DEAL ENDED | only with `"notify_deal_ended": true`; otherwise Notion shows Ended / Sold out |
 | ⚠️ CAN'T SEARCH / CAN'T READ | a site or page failed 3 checks in a row (once); ✅ when it works again |
 | ⚠️ SUSPICIOUS PRICE | under 20% or over 300% of the usual price: not trusted, check it yourself |
@@ -269,7 +293,8 @@ Drills by Nov 10:
 | store_discount_percent | 0 | any positive difference from the site's "was" price = ON SALE |
 | drop_percent_alert | 15 | labels a drop vs your history as a strong discount; any drop from the last saved price can still alert |
 | require_real_discount | false | true: ON SALE and PRICE DROP also need a YES verdict |
-| deeper_drop_percent | 0 | any further price drop sends ⬇️ EVEN LOWER |
+| min_drop_percent | 1 | price changes smaller than this are noise: never a PRICE DROP or EVEN LOWER. 0 = every piastre counts |
+| deeper_drop_percent | 0 | EVEN LOWER needs this much under the last message (never less than min_drop_percent) |
 | repeat_after_hours | 24 | a deal back within this, at the same price or higher, is not sent again |
 | notify_deal_ended | false | also message when a deal ends |
 | exclude_words, match_min_ratio | `[]`, 1.0 | matching for every item |
@@ -287,7 +312,7 @@ Also: `jitter_seconds`, `timezone`, `real_discount_percent`, `min_history_days`,
 
 These live in `data/` (laptop) or `/tmp/data` (Space) and are synced to the dataset:
 
-- `history/<device>-<date>.csv`: every price seen.
+- `history/<device>-<date>.csv`: every price seen; for searched items the `url` column says which listing was picked.
 - `state/<device>.json`: what was seen and what was already sent. This is what prevents repeats.
 - `watchlist_cache.json`: a copy of your Notion Watchlist, used when Notion is unreachable.
 
@@ -302,6 +327,7 @@ Not synced: `pending_deals.json`, the Deals rows waiting for Notion.
 | setup_notion.py: 403 | tick Read, Update and Insert content in the connection's settings |
 | alert for the wrong product | `--search "<name>"`, then Exclude / Must include / Min price on that row |
 | item "not listed" on a site that sells it | a word of the Name is missing in that site's titles: shorten the Name |
+| a site's price jumps between two values | two listings are being picked: `--search` lists both, the history `url` column shows which; add the other one's distinguishing word to Exclude |
 | ⚠️ CAN'T SEARCH a site | blocked: `impersonate` backend, else search it from the laptop |
 | no messages at all | normal when nothing is discounted: the Latest prices column shows current prices |
 | every alert twice | a site is searched from two places: `STORES` / `EXCLUDE_STORES` |

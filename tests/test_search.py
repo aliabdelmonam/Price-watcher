@@ -1,4 +1,5 @@
 """Search mode: sites, title matching, each site's results reader, and the crawler loop."""
+import csv
 import json
 
 import pytest
@@ -17,7 +18,7 @@ from watcher.search import amazon as amazon_search
 from watcher.search import jumia as jumia_search
 from watcher.search import noon as noon_search
 from watcher.search.common import generic_cards, jsonld_candidates
-from watcher.sites import load_sites
+from watcher.sites import apply_site_rows, load_sites
 
 SITE = {s.key: s for s in load_sites(SITES + ["https://shop.example.com/"])[0]}
 
@@ -81,7 +82,7 @@ def test_amazon_results():
     assert (best.url, best.price, best.list_price, best.currency) == ("https://www.amazon.eg/dp/B0R60INC01", 1399, 1699, "EGP")
     blocked = amazon_search.parse(CAPTCHA[1], SITE["amazon_eg"], 200, "u")
     assert not blocked.ok and blocked.blocked
-    assert amazon_search.search_url(SITE["amazon_eg"], "soundcore r60i nc") == "https://www.amazon.eg/-/en/s?k=soundcore+r60i+nc"
+    assert amazon_search.search_url(SITE["amazon_eg"], "soundcore r60i nc") == "https://www.amazon.eg/s?k=soundcore+r60i+nc"
 
 
 def test_noon_results_from_page_data_and_app_router_payload():
@@ -177,7 +178,7 @@ def test_crawler_reports_only_real_discounts(tmp_path):
                  JUM_Q: CAPTCHA}, sites=SITES)
     h.cycle()
     [sale] = h.tg.texts("ALREADY ON SALE")                          # the store shows 11% off at noon
-    assert "· noon" in sale and "Listing:" in sale and "-11%" in sale
+    assert "· noon" in sale and "Listing:" in sale and "-11.1%" in sale and "price drop" not in sale
     summary = h.tg.texts("First check done")[0]
     assert "Not listed: Soundcore R60i NC at amazon_eg" in summary and "jumia" in summary
     [rec] = h.notion.rows_for()
@@ -203,12 +204,21 @@ def test_crawler_reports_only_real_discounts(tmp_path):
 def test_no_discount_means_no_message(tmp_path):
     h = Harness(tmp_path, [row("x", amazon_url("B0TEST0001"), 5000), row("", "", 1200, name="Soundcore R60i NC")],
                 {"B0TEST0001": amazon_page(5999), NOON_Q: noon_results(("N70284977V", R60, 1500, 1480))},
-                sites=SITES[:1])
+                sites=SITES[:1], store_discount_percent=10)
     h.cycle()
     h.tg.sent.clear()
     for _ in range(3):
         h.cycle(FIVE_MIN)
-    assert h.tg.sent == [] and h.notion.rows_for() == []             # 1.3% off, above target: silence
+    assert h.tg.sent == [] and h.notion.rows_for() == []             # 1.3% off < your 10%, above target: silence
+
+
+def test_any_store_discount_counts_by_default(tmp_path):
+    h = Harness(tmp_path, [row("", "", 1200, name="Soundcore R60i NC")],
+                {NOON_Q: noon_results(("N70284977V", R60, 1500, 1480))}, sites=SITES[:1])
+    h.cycle()
+    for _ in range(3):
+        h.cycle(FIVE_MIN)
+    assert len(h.tg.texts("ALREADY ON SALE")) == 1 and len(h.notion.rows_for()) == 1   # once, never repeated
 
 
 def test_searches_run_every_search_interval(tmp_path):
@@ -234,3 +244,54 @@ def test_add_search_item_from_telegram(tmp_path):
     [note] = h.tg.texts("Now searching")
     assert "noon: 1,500 EGP" in note                                # the earbuds, not the 149 case
     assert "🔎 soundcore r60i nc (target 1,200): noon 1,500" in bot.handle("/list")
+
+
+def test_notion_site_rows_only_switch_configured_sites():
+    configured = load_sites(SITES)[0]
+    rows = [{"key": "Noon Egypt", "url": "https://www.noon.com/egypt-en/", "enabled": False, "currency": ""},
+            {"key": "amazon_com", "url": "https://www.amazon.com/", "enabled": True, "currency": ""},
+            {"key": "jumia", "url": "", "enabled": True, "currency": "egp"}]
+    sites = apply_site_rows(configured, rows)
+    assert [(s.key, s.enabled, s.currency) for s in sites] == [
+        ("noon", False, "EGP"), ("amazon_eg", True, "EGP"), ("jumia", True, "EGP")]
+    assert apply_site_rows(configured, []) == configured                # no rows: nothing changes
+
+
+def test_near_equal_listings_do_not_swap_every_check(tmp_path):
+    a, b = "/soundcore-r60i-nc-black-1.html", "/soundcore-r60i-nc-white-2.html"
+    h = Harness(tmp_path, [row("", "", None, name="Soundcore R60i NC")],
+                {JUM_Q: jumia_results((R60, 1360, None, a), (R60, 1355, None, b))}, sites=SITES[2:])
+    h.cycle()
+    h.tg.sent.clear()
+    pid = "s-soundcore-r60i-nc@jumia"
+    assert h.rt.pairs[pid].url.endswith(b)
+    h.fetcher.pages[JUM_Q] = jumia_results((R60, 1350, None, a), (R60, 1355, None, b))   # a is 0.4% cheaper
+    h.cycle(FIVE_MIN)
+    assert h.rt.pairs[pid].url.endswith(b) and h.tg.sent == []         # not worth switching listings
+    h.fetcher.pages[JUM_Q] = jumia_results((R60, 1290, None, a), (R60, 1355, None, b))   # a is 4.8% cheaper
+    h.cycle(FIVE_MIN)
+    assert h.rt.pairs[pid].url.endswith(a)
+    [drop] = h.tg.texts("PRICE DROP")
+    assert "Previous price: 1,355" in drop
+
+
+def test_a_deal_whose_listing_disappears_ends_after_three_checks(tmp_path):
+    listing = (R60, 1355, 1800, "/anker-soundcore-r60i-nc-134706571.html")
+    h = Harness(tmp_path, [row("", "", None, name="Soundcore R60i NC")], {JUM_Q: jumia_results(listing)},
+                sites=SITES[2:])
+    h.cycle()
+    assert h.notion.rows_for()[0]["status"] == "Active"                 # 25% off: already on sale
+    h.fetcher.pages[JUM_Q] = jumia_results(("Soundcore R50i NC", 900, None, "/r50i-1.html"))
+    for _ in range(2):
+        h.cycle(FIVE_MIN)
+    assert h.notion.rows_for()[0]["status"] == "Active"                 # one or two misses can be a glitch
+    h.cycle(FIVE_MIN)
+    [rec] = h.notion.rows_for()
+    assert (rec["status"], rec["price"]) == ("Ended", 1355) and rec["link"].endswith("-134706571.html")
+    h.tg.sent.clear()
+    h.fetcher.pages[JUM_Q] = jumia_results(listing)
+    h.cycle(FIVE_MIN)
+    assert h.tg.sent == [] and h.notion.rows_for()[0]["status"] == "Active"   # back within a day: quietly
+    [path] = (h.data_dir / "history").glob("*.csv")
+    rows = list(csv.DictReader(path.open(newline="", encoding="utf-8")))
+    assert rows[-1]["url"].endswith("-134706571.html") and rows[-2]["error"] == "not listed"

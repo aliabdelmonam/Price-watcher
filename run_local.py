@@ -2,6 +2,7 @@
 """Run the watcher on your laptop. Same code as the Space.
 
   python run_local.py                      run forever (Ctrl+C stops cleanly and syncs)
+  python run_local.py --items              list every item that will be watched, and where it came from
   python run_local.py --once               one real cycle (alerts, Notion, history), print a table;
                                            safe to schedule every 5 minutes: nothing is ever repeated
   python run_local.py --dry-run            read every item and print it; no alerts, nothing saved
@@ -34,6 +35,7 @@ from watcher.notify import short_title
 from watcher.prices import money
 from watcher.search import pick, search_site
 from watcher.sites import load_sites
+from watcher.watchlist import source_of
 
 
 def table(rows: list[tuple]) -> None:
@@ -86,6 +88,23 @@ def cmd_search(cfg, args) -> None:
         print(f"   picked: {best.url}" if best else "   picked: nothing (not listed here)")
 
 
+def cmd_items(cfg) -> None:
+    items = quick_items(cfg)
+    sites = [s for s in load_sites(cfg.sites)[0] if s.enabled and cfg.handles_store(s.key)]
+    if not items:
+        print('No items: add rows to your Notion Watchlist or "items" to watchlist.json.')
+        return
+    print(f"{len(items)} item(s) will be watched (Notion Watchlist + watchlist.json + /add):")
+    for item in items:
+        target = money(item.target_price) if item.target_price is not None else "none"
+        if item.url:
+            where = f"tracks {item.url}"
+        else:
+            keys = [s.key for s in sites if wants(item, s)]
+            where = "searched on " + (", ".join(keys) or "no site (check its Sites column)")
+        print(f"  {item.name[:40]:<40} from {source_of(item):<15} target {target:<8} {where}")
+
+
 def cmd_save_fixture(cfg, url: str) -> None:
     store = store_for_url(url)
     adapter = get_adapter(store)
@@ -109,6 +128,7 @@ def cmd_save_fixture(cfg, url: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--items", action="store_true", help="list the items that will be watched, then exit")
     parser.add_argument("--once", action="store_true", help="one real cycle, then exit")
     parser.add_argument("--dry-run", action="store_true", help="read and print only; no alerts, nothing saved")
     parser.add_argument("--test", action="store_true", help="one product per store: worked / blocked")
@@ -128,6 +148,8 @@ def main() -> None:
     setup_logging()
     cfg = load_config(stores=args.stores, exclude_stores=args.exclude_stores)
 
+    if args.items:
+        return cmd_items(cfg)
     if args.search:
         return cmd_search(cfg, args)
     if args.url:

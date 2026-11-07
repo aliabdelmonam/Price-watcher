@@ -122,16 +122,24 @@ class Matcher:
         return first < len(toks) and any(t in FOR_WORDS for t in before[-6:])
 
 
-def pick(candidates: list, matcher: Matcher, min_price=None, max_price=None, accessory_ratio: float = 0.35):
+def listing_key(url_or_title: str) -> str:
+    """The same listing whatever its tracking query string or #fragment."""
+    return str(url_or_title or "").split("#", 1)[0].split("?", 1)[0].rstrip("/").casefold()
+
+
+def pick(candidates: list, matcher: Matcher, min_price=None, max_price=None, accessory_ratio: float = 0.35,
+         prefer_url: str = "", keep_within_percent: float = 0.0):
     """The listing to track on one site: the cheapest in-stock listing whose title matches.
 
+    With prefer_url (the listing picked last time), that listing is kept while it is no more than
+    keep_within_percent dearer than the cheapest, so two near-equal listings don't swap every check.
     Returns (best or None, [(candidate, verdict), ...] in page order)."""
     # Search pages sometimes render the same listing more than once (or with tracking
     # query strings). Collapse those before matching and ranking so duplicate cards do
     # not distort the cheapest listing or accessory-price check.
     unique = {}
     for c in candidates:
-        key = (c.url or c.title).split("#", 1)[0].split("?", 1)[0].rstrip("/").casefold()
+        key = listing_key(c.url or c.title)
         old = unique.get(key)
         if old is None or (c.price is not None and (old.price is None or c.price < old.price)):
             unique[key] = c
@@ -158,6 +166,11 @@ def pick(candidates: list, matcher: Matcher, min_price=None, max_price=None, acc
             verdict[id(cheap)] = "far cheaper than the other matches (accessory?)"
     buyable = [c for c in matched if c.in_stock is not False and c.price is not None]
     best = min(buyable, key=lambda c: c.price) if buyable else (matched[0] if matched else None)
+    if best is not None and best in buyable and prefer_url:
+        wanted = listing_key(prefer_url)
+        kept = next((c for c in buyable if listing_key(c.url) == wanted), None)
+        if kept is not None and kept.price <= best.price * (1 + max(0.0, keep_within_percent) / 100):
+            best = kept
     for c in matched:
         verdict[id(c)] = "picked" if c is best else "match"
     return best, [(c, verdict[id(c)]) for c in candidates]

@@ -79,8 +79,11 @@ class Settings:
     real_discount_percent: float = 10        # "real" = at least this far below the 14-day median
     min_history_days: float = 3              # before this, compare with the first price seen
     median_days: float = 14
+    # price moves smaller than this are noise (Amazon prices wobble by a few piastres): they never
+    # count as PRICE DROP or EVEN LOWER, and the tracked listing isn't swapped for one this close
+    min_drop_percent: float = 1.0
     # when you hear about a deal again (never for the same deal at the same price)
-    deeper_drop_percent: float = 0.0         # any distinct lower price is a new message
+    deeper_drop_percent: float = 0.0         # EVEN LOWER needs this much under the last alert (at least min_drop_percent)
     repeat_after_hours: float = 24           # a deal back within this, same price or higher: quiet
     notify_deal_ended: bool = False          # also message when a deal ends (Notion always shows it)
     # search mode
@@ -126,6 +129,8 @@ class Settings:
             except (TypeError, ValueError):
                 log.warning("watchlist.json: fx_rates %r is not a number, ignored", code)
         settings.fx_rates = rates
+        settings.min_drop_percent = min(50.0, max(0.0, float(settings.min_drop_percent)))
+        settings.deeper_drop_percent = min(90.0, max(0.0, float(settings.deeper_drop_percent)))
         settings.low_priority_every = max(1, int(settings.low_priority_every))
         settings.failure_alert_after = max(1, int(settings.failure_alert_after))
         return settings

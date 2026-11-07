@@ -110,7 +110,7 @@ def process(rt, item: Item, reading: Reading, first_run: bool, summary: list) ->
     st = rt.state.item(item.id)
     st.last_check_at = now
     reading = effective(item, reading)
-    rt.history.add(now, item.id, item.store, reading)
+    rt.history.add(now, item.id, item.store, reading, url=item.url if item.parent_id else "")
     rt.heartbeat["last_progress_ts"] = now
     if not reading.ok:
         _failed(rt, item, st, reading)

@@ -7,7 +7,7 @@ tried as a Shopify or WooCommerce store, then through its normal search page.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 from .prices import parse_bool
@@ -76,6 +76,33 @@ def parse_site(entry) -> tuple[Site | None, str | None]:
         enabled=parse_bool(data.get("enabled"), True),
     )
     return site, None
+
+
+def apply_site_rows(configured: list[Site], rows) -> list[Site]:
+    """Your Notion Sites rows switch the configured sites on or off (and may set a currency).
+
+    The configured list (watchlist.json "sites" or SITES) decides which sites exist: a configured
+    site without a row stays as configured, and a row for a site that isn't configured is ignored.
+    A row matches by its Key (or Name) or by its URL, so a renamed row still works."""
+    by_key: dict[str, dict] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        keys = [str(row.get("key") or "").strip().lower()]
+        if row.get("url"):
+            site, _ = parse_site({"url": row.get("url")})
+            keys.append(site.key if site is not None else "")
+        for key in keys:
+            if key:
+                by_key.setdefault(key, row)
+    out = []
+    for site in configured:
+        row = by_key.get(site.key)
+        if row is not None:
+            currency = str(row.get("currency") or "").strip().upper() or site.currency
+            site = replace(site, enabled=site.enabled and parse_bool(row.get("enabled"), True), currency=currency)
+        out.append(site)
+    return out
 
 
 def load_sites(entries) -> tuple[list[Site], list[str]]:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import random
 
+from . import alerts
 from .core import process, sanity_check
 from .models import NOT_LISTED, Item, Reading
 from .notify import esc
@@ -51,6 +52,17 @@ def make_pair(rt, item: Item, site, listing=None) -> Item:
                 priority=item.priority, alert_on_restock=item.alert_on_restock, notes=item.notes,
                 only_seller=item.only_seller, row=item.row, parent_id=item.id,
                 listing_title=listing.title if listing else "")
+
+
+def known_pair(rt, item: Item, site, st) -> Item:
+    """The listing last tracked for item@site (after a restart: its saved link and title)."""
+    pair = rt.pairs.get(pair_id(item, site))
+    if pair is not None and pair.listing_title:
+        return pair
+    pair = make_pair(rt, item, site)
+    if st.last_url:
+        pair.url, pair.listing_title = st.last_url, st.last_title
+    return pair
 
 
 def _interleave(jobs: list) -> list:
@@ -102,16 +114,23 @@ def crawl(rt, started: float, burst: bool, force: bool, first_run: bool, summary
         outcome[site.key] = None
 
         best, _ = pick(result.candidates, rt.matcher_for(item), item.min_price, item.max_price,
-                       rt.s.accessory_price_ratio)
+                       rt.s.accessory_price_ratio, prefer_url=st.last_url,
+                       keep_within_percent=rt.s.min_drop_percent)
         if best is None:
             st.last_check_at, st.last_error = now, NOT_LISTED
+            st.missing_count += 1
             rt.history.add(now, pid, site.key, Reading.failed(NOT_LISTED, result.status))
+            if st.deal_open and st.missing_count >= rt.s.failure_alert_after:
+                gone = known_pair(rt, item, site, st)  # its deal row says Ended instead of staying Active
+                rt.deliver(gone, alerts.listing_gone(gone, st, rt.stats.get(pid).snapshot(now), rt.s, now))
             pair = rt.pairs.setdefault(pid, make_pair(rt, item, site))
             summary.append(("missing", pair, None))
             notes.setdefault(item.id, []).append(f"{site.key}: not listed")
             log.info("%-28s %-10s not listed (%d results)", item.name[:28], site.key, len(result.candidates))
             continue
 
+        st.missing_count = 0
+        st.last_url = best.url
         pair = make_pair(rt, item, site, best)
         rt.pairs[pid] = pair
         reading = Reading(price=best.price, list_price=best.list_price, currency=pair.currency,

@@ -8,6 +8,9 @@ from ..prices import detect_currency, parse_price
 from .common import Candidate, SearchResult, generic_cards, no_results_page, rsc_objects
 
 PRICE_KEYS = ("sale_price", "price", "offer_price")
+# the crossed-out price on a product card; class names are generated (e.g. Price_oldPrice__x1y2)
+OLD_PRICE = ('[class*="oldPrice"], [class*="OldPrice"], [class*="old-price"], [class*="wasPrice"], '
+             '[class*="was-price"], [class*="strike"], [data-qa*="was"], del, s, strike')
 
 
 def search_url(site, query: str) -> str:
@@ -66,7 +69,7 @@ def parse(html: str, site, status: int | None = 200, url: str = "") -> SearchRes
         href = (link_el.get("href") or "").strip() if link_el else ""
         if not name or price is None or not href:
             continue
-        old = parse_price(page.text_of(card.select_one('[class*="_oldPrice_"]')))
+        old = parse_price(page.text_of(card.select_one(OLD_PRICE)))
         link = page.clean_url(urljoin(site.root + "/", href), keep=())
         card_hits.setdefault(link, Candidate(name, link, price,
                                              old if old and old > price else None,

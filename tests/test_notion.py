@@ -4,7 +4,8 @@ import uuid
 
 import pytest
 
-from helpers import FIVE_MIN, NOON_Q, R60, SITES, Harness, noon_results
+from helpers import FIVE_MIN, NOON_Q, R60, Harness, noon_results
+from helpers import SITES as SITE_URLS  # watcher.notion's SITES (the database name) would hide it
 from watcher.notion import API, DEALS, SITES, WATCHLIST, NotionClient, NotionError, notion_id
 
 PAGE = "https://www.notion.so/myspace/Price-Watcher-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d?pvs=4"
@@ -170,7 +171,7 @@ def test_the_watcher_with_real_notion_calls_writes_each_deal_once(tmp_path):
     client.add_watchlist_item({"name": "Soundcore R60i NC", "target_price": 1200})
     setup_calls = len(api.calls)
     h = Harness(tmp_path, None, {NOON_Q: noon_results(("N70284977V", R60, 1570, 1394.95))},
-                sites=SITES[:1], notion=client)
+                sites=SITE_URLS[:1], notion=client)
     h.cycle()
     for _ in range(10):
         h.cycle(FIVE_MIN)
@@ -180,3 +181,12 @@ def test_the_watcher_with_real_notion_calls_writes_each_deal_once(tmp_path):
     assert len(h.tg.texts("ALREADY ON SALE")) == 1
     page_writes = [c for c in api.calls[setup_calls:] if c[0] in ("POST", "PATCH") and c[1].startswith("/pages")]
     assert len(page_writes) == 2                                    # the deal row + Latest prices, once each
+
+
+def test_notion_sites_switch_configured_sites_but_never_add_or_drop_them(tmp_path):
+    client, _, _ = client_for()
+    client.add_site({"name": "Noon Egypt", "key": "", "url": "https://www.noon.com/egypt-en/", "enabled": False})
+    client.add_site({"name": "amazon_com", "key": "amazon_com", "url": "https://www.amazon.com/", "enabled": True})
+    h = Harness(tmp_path, None, {}, sites=SITE_URLS, notion=client)
+    assert [(s.key, s.enabled) for s in h.rt.sites] == [("noon", False), ("amazon_eg", True), ("jumia", True)]
+    assert [s.key for s in h.rt.active_sites()] == ["amazon_eg", "jumia"]   # amazon_com is not configured

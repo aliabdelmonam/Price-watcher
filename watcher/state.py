@@ -21,11 +21,15 @@ class ItemState:
     last_check_at: float | None = None
     last_ok_at: float | None = None
     last_price: float | None = None
-    reference_price: float | None = None  # prior baseline retained until the price recovers
+    # the regular price: the last price that wasn't a drop. A PRICE DROP is measured from it and
+    # it is kept until the price recovers. Never the store's crossed-out 'was' price.
+    reference_price: float | None = None
     last_list_price: float | None = None
     last_in_stock: bool | None = None
     last_seller: str | None = None
     last_title: str = ""
+    last_url: str = ""                      # search mode: the listing picked last time (kept unless beaten)
+    missing_count: int = 0                  # search mode: checks in a row the listing was not on the site
     fail_count: int = 0
     fail_alerted: bool = False
     last_error: str | None = None
@@ -34,6 +38,7 @@ class ItemState:
     deal_started_at: float | None = None    # when the current (or last) deal was first reported
     deal_closed_at: float | None = None
     deal_alert_price: float | None = None   # the price in the last Telegram message about it
+    deal_prev_price: float | None = None    # the regular price before this deal ('Previous price' in Notion)
     deal_reasons: list = field(default_factory=list)
     deal_log_sig: str = ""                  # what was last written to Notion: identical writes are skipped
     deal_page_id: str = ""                  # its row in the Notion Deals database

@@ -6,7 +6,12 @@ Backends per store (settings.fetch_backend in watchlist.json):
   "impersonate" curl_cffi with a real Chrome TLS fingerprint (pip install curl_cffi);
                 try this before the home-device fallback if a store blocks you
   "browser"     Playwright, last resort for pages that need JavaScript (10-20x heavier)
+  "browser_visible"  the same with a visible window (some stores refuse headless browsers)
 A local file path or file:// URL is read from disk, to test an adapter on a saved page.
+
+Browsers: one Playwright per thread, shared by every Fetcher in that thread (a second one
+started in the same thread fails with "using Playwright Sync API inside the asyncio loop").
+A browser that was closed by hand or crashed is started again on the next fetch.
 """
 from __future__ import annotations
 
@@ -32,6 +37,14 @@ DEFAULT_USER_AGENT = (
 )
 
 _ENCODINGS = "gzip, deflate, br" if importlib.util.find_spec("brotli") else "gzip, deflate"
+
+# What a fully loaded page shows, per store family: product cards on a search page, the product
+# block on a product page. Waiting for it lets JavaScript sites render before the page is read.
+SEARCH_READY = {"amazon": 'div[data-component-type="s-search-result"]', "jumia": "article.prd",
+                "noon": '[data-qa="plp-product-box"]'}
+PRODUCT_READY = {"amazon": "#productTitle, #outOfStock", "jumia": "h1", "noon": "h1"}
+
+_BROWSERS = threading.local()  # this thread's Playwright and its browsers
 
 
 def browser_headers(user_agent: str) -> dict[str, str]:
@@ -100,6 +113,51 @@ def _decode(resp) -> str:
         return resp.content.decode("utf-8", "replace")
 
 
+def store_family(store: str) -> str:
+    return next((name for name in ("amazon", "noon", "jumia") if str(store).startswith(name)), "")
+
+
+def is_search_url(url: str) -> bool:
+    """amazon /s?k=, jumia /catalog/?q=, noon /search/?q= (and the generic ?q= search pages)."""
+    parts = urlsplit(url)
+    path, query = parts.path.lower().rstrip("/"), "&" + parts.query.lower()
+    return (path.endswith("/s") and "&k=" in query) or (
+        ("/catalog" in path or "/search" in path) and ("&q=" in query or "&query=" in query))
+
+
+def _quietly(action) -> None:
+    try:
+        action()
+    except Exception:
+        pass
+
+
+def _browser_state():
+    if not hasattr(_BROWSERS, "browsers"):
+        _BROWSERS.playwright = None
+        _BROWSERS.browsers = {}  # (headless, user agent) -> (browser, context)
+    return _BROWSERS
+
+
+def close_browsers() -> None:
+    """Close this thread's browsers and its Playwright; the next browser fetch starts them again."""
+    state = _browser_state()
+    for browser, context in list(state.browsers.values()):
+        _quietly(context.close)
+        _quietly(browser.close)
+    state.browsers.clear()
+    if state.playwright is not None:
+        _quietly(state.playwright.stop)
+        state.playwright = None
+
+
+def _connected(browser) -> bool:
+    try:
+        return bool(browser.is_connected())
+    except Exception:
+        return False
+
+
 def local_path(url: str) -> Path | None:
     if url.startswith("file://"):
         return Path(urllib.request.url2pathname(urlsplit(url).path))
@@ -121,7 +179,7 @@ class Fetcher:
         self._sessions: dict[tuple[str, str], object] = {}
         self._last: dict[str, float] = {}
         self._lock = threading.Lock()
-        self._tls = threading.local()
+        self._browser_threads: set[int] = set()  # threads where this fetcher opened a browser
 
     # ------------------------------------------------------------------ public
 
@@ -173,19 +231,9 @@ class Fetcher:
             except Exception:
                 pass
         self._sessions.clear()
-        for browser, _context in getattr(self._tls, "browsers", {}).values():
-            try:
-                browser.close()
-            except Exception:
-                pass
-        self._tls.browsers = {}
-        playwright = getattr(self._tls, "playwright", None)
-        if playwright is not None:
-            try:
-                playwright.stop()
-            except Exception:
-                pass
-            self._tls.playwright = None
+        if threading.get_ident() in self._browser_threads:  # Playwright objects belong to their thread
+            self._browser_threads.discard(threading.get_ident())
+            close_browsers()
 
     # ----------------------------------------------------------------- helpers
 
@@ -218,46 +266,65 @@ class Fetcher:
         session.headers.update(browser_headers(self.user_agent))
         return session
 
+    def _context(self, headless: bool):
+        """This thread's browser context for this user agent; started (again) when needed."""
+        from playwright.sync_api import sync_playwright
+
+        state = _browser_state()
+        key = (headless, self.user_agent)
+        entry = state.browsers.get(key)
+        if entry is not None:
+            browser, context = entry
+            if _connected(browser):
+                return context
+            state.browsers.pop(key, None)  # closed by hand or crashed: start a new one
+            _quietly(context.close)
+            _quietly(browser.close)
+        if state.playwright is None:
+            state.playwright = sync_playwright().start()
+        self._browser_threads.add(threading.get_ident())
+        browser = state.playwright.chromium.launch(headless=headless, args=["--no-sandbox"])
+        context = browser.new_context(user_agent=self.user_agent, locale="en-US")
+        state.browsers[key] = (browser, context)
+        return context
+
     def _browser_get(self, url: str, store: str, *, headless: bool = True) -> FetchResult:
         started = time.monotonic()
         try:
-            from playwright.sync_api import sync_playwright
+            importlib.import_module("playwright.sync_api")
         except ImportError:
             return FetchResult(None, "", url, "playwright not installed: pip install playwright && "
                                               "playwright install chromium")
-        try:
-            browsers = getattr(self._tls, "browsers", None)
-            if browsers is None:
-                browsers = self._tls.browsers = {}
-            if headless not in browsers:  # Playwright objects stay on their own thread
-                playwright = getattr(self._tls, "playwright", None)
-                if playwright is None:
-                    playwright = self._tls.playwright = sync_playwright().start()
-                browser = playwright.chromium.launch(headless=headless, args=["--no-sandbox"])
-                context = browser.new_context(user_agent=self.user_agent, locale="en-US")
-                browsers[headless] = (browser, context)
-            page = browsers[headless][1].new_page()
-        except Exception as exc:
-            return FetchResult(None, "", url, f"browser start failed: {_short(exc)}")
+        page = None
+        for attempt in range(2):
+            try:
+                page = self._context(headless).new_page()
+                break
+            except Exception as exc:
+                if attempt == 1:
+                    return FetchResult(None, "", url, f"browser start failed: {_short(exc)}",
+                                       time.monotonic() - started)
+                close_browsers()  # a broken browser or Playwright: start everything once more
         try:
             resp = page.goto(url, wait_until="domcontentloaded", timeout=int(self.timeout * 2000))
             status = resp.status if resp else None
             if status is None or status < 400:
-                selectors = {
-                    "amazon_eg": 'div[data-component-type="s-search-result"]',
-                    "amazon_com": 'div[data-component-type="s-search-result"]',
-                    "jumia": "article.prd",
-                    "noon": '[data-qa="plp-product-box"]',
-                }
-                selector = selectors.get(store)
-                if selector:
-                    try:
-                        page.wait_for_selector(selector, timeout=min(30_000, int(self.timeout * 1000)))
-                    except Exception:
-                        pass  # keep the response body so the site parser can classify it
-            return FetchResult(resp.status if resp else None, page.content(), page.url, None,
-                               time.monotonic() - started)
+                self._wait_until_ready(page, store, url)
+            return FetchResult(status, page.content(), page.url, None, time.monotonic() - started)
         except Exception as exc:
             return FetchResult(None, "", url, f"browser error: {_short(exc)}", time.monotonic() - started)
         finally:
-            page.close()
+            _quietly(page.close)
+
+    def _wait_until_ready(self, page, store: str, url: str) -> None:
+        family = store_family(store)
+        if is_search_url(url):
+            selector, limit = SEARCH_READY.get(family), min(30_000, int(self.timeout * 1000))
+        else:
+            selector, limit = PRODUCT_READY.get(family), min(10_000, int(self.timeout * 1000))
+        if not selector:
+            return
+        try:
+            page.wait_for_selector(selector, timeout=limit)
+        except Exception:
+            pass  # keep what loaded: the page parser tells blocked / no results / layout changed

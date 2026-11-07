@@ -3,9 +3,12 @@
 A row WITHOUT a url is searched on every site in watchlist.json "sites" (or only the ones in its
 'sites' column); on each site the cheapest listing whose title matches the name is tracked.
 A row WITH a url tracks that exact product page.
-Sources, in order: your Notion Watchlist -> DATA_DIR/watchlist_cache.json (its last good copy,
-used when Notion is unreachable) -> the "items" in watchlist.json.
-Items added with /add while Notion is unreachable live in DATA_DIR/watchlist_overrides.json.
+Every source is watched, together: your Notion Watchlist (DATA_DIR/watchlist_cache.json, its last
+good copy, while Notion is unreachable), the "items" in watchlist.json, and items added with /add
+while Notion was unreachable (DATA_DIR/watchlist_overrides.json). An item listed in several places
+is watched once, with the settings of the first: Notion, then watchlist.json, then /add.
+A watchlist.json item is a name, a link, or an object with the Notion column names
+({"name": ..., "target_price": ...} or {"Name": ..., "Target price": ...}).
 A bad row is skipped with one Telegram warning; it is picked up as soon as you fix it.
 """
 from __future__ import annotations
@@ -19,6 +22,10 @@ from .prices import parse_amount, parse_bool
 from .state import read_json, write_json_atomic
 
 PRIORITY_ALIASES = {"medium": "normal", "med": "normal", "mid": "normal", "": "normal", "h": "high", "l": "low"}
+# watchlist.json keys written like the Notion columns ("Target price", "Must include", "Link"...)
+FIELD_ALIASES = {"title": "name", "product": "name", "link": "url", "target": "target_price", "site": "sites",
+                 "stores": "sites", "must": "must_include", "note": "notes", "disabled": "paused"}
+SOURCES = (("Watchlist", "Notion"), ("watchlist.json", "watchlist.json"), ("/add", "/add"))
 
 
 def clean_id(value) -> str:
@@ -42,6 +49,55 @@ def _amount(row: dict, column: str, where: str, problems: list[str]):
         problems.append(f"{where}: {column} {str(raw)!r} is not a number, item skipped")
         return None, False
     return value, True
+
+
+def normalize_row(row) -> dict | None:
+    """A watchlist row as a dict with the field names build_item reads; None if it is not an item."""
+    if isinstance(row, str):
+        text = row.strip()
+        if not text:
+            return None
+        return {"url": text} if re.match(r"https?://", text, re.I) else {"name": text}
+    if not isinstance(row, dict):
+        return None
+    out: dict = {}
+    for key, value in row.items():
+        name = str(key).strip()
+        if not name.startswith("_"):
+            name = re.sub(r"[\s-]+", "_", name.lower())
+            name = FIELD_ALIASES.get(name, name)
+        if isinstance(value, (list, tuple)):  # "sites": ["noon", "jumia"]
+            value = ", ".join(str(v).strip() for v in value if str(v).strip())
+        out[name] = value
+    if "paused" in out:
+        out["enabled"] = parse_bool(out.get("enabled"), True) and not parse_bool(out.pop("paused"), False)
+    return out
+
+
+def source_of(item: Item) -> str:
+    """Where an item came from: Notion, watchlist.json or /add."""
+    return next((name for prefix, name in SOURCES if (item.row or "").startswith(prefix + " ")), "Notion")
+
+
+def merge_items(*groups: list[Item]) -> list[Item]:
+    """Items of several sources, each watched once: the same id, link or searched name is one item,
+    and the first source's row wins."""
+    items: list[Item] = []
+    ids: set[str] = set()
+    urls: set[str] = set()
+    names: set[str] = set()
+    for group in groups:
+        for item in group:
+            name = item.name.casefold()
+            if item.id in ids or (item.url and item.url in urls) or (item.is_search and name in names):
+                continue
+            items.append(item)
+            ids.add(item.id)
+            if item.url:
+                urls.add(item.url)
+            if item.is_search:
+                names.add(name)
+    return items
 
 
 def build_item(row: dict, label: str, problems: list[str], resolve=None) -> Item | None:
@@ -87,11 +143,17 @@ def build_item(row: dict, label: str, problems: list[str], resolve=None) -> Item
                 currency=str(row.get("currency") or default_currency(url)).strip().upper(), **shared)
 
 
-def build_items(rows: list[dict], source: str, problems: list[str], resolve=None) -> list[Item]:
+def build_items(rows: list, source: str, problems: list[str], resolve=None) -> list[Item]:
     items: list[Item] = []
     seen: dict[str, str] = {}
-    for index, row in enumerate(rows, start=1):
-        label = f"{source} row {row.get('_row', index)}"
+    for index, raw in enumerate(rows or [], start=1):
+        row = normalize_row(raw)
+        label = f"{source} row {(row or {}).get('_row', index)}"
+        if row is None:
+            if raw not in (None, "", {}):
+                problems.append(f"{label}: {str(raw)[:40]!r} is not an item: write a name, a link, "
+                                'or an object with a "name"')
+            continue
         item = build_item(row, label, problems, resolve)
         if item is None:
             continue

@@ -16,7 +16,7 @@ CAPTCHA = (200, '<html><form action="/errors/validateCaptcha"></form></html>')
 FIVE_MIN = 300
 SITES = ["https://www.noon.com/egypt-en/", "https://www.amazon.eg/", "https://www.jumia.com.eg/"]
 R60 = "Soundcore R60i NC True Wireless Earbuds with Adaptive ANC, Hi-Res LDAC, 50H Playtime, Black"
-NOON_Q, AMZ_Q, JUM_Q = "noon.com/egypt-en/search/?q=", "amazon.eg/-/en/s?k=", "jumia.com.eg/catalog/?q="
+NOON_Q, AMZ_Q, JUM_Q = "noon.com/egypt-en/search/?q=", "amazon.eg/s?k=", "jumia.com.eg/catalog/?q="
 
 
 def cairo_ts(y, mo, d, h, mi=0) -> float:
@@ -198,7 +198,8 @@ def jumia_results(*cards):
 class Harness:
     """A Runtime wired to fakes, with a clock you move by hand."""
 
-    def __init__(self, tmp_path, rows, pages, start=None, sites=None, notion=None, boot=True, **settings):
+    def __init__(self, tmp_path, rows, pages, start=None, sites=None, notion=None, boot=True, items=None,
+                 **settings):
         self.clock = Clock(start or cairo_ts(2026, 11, 6, 15))
         self.tg = FakeTelegram()
         self.notion = notion or FakeNotion(rows)
@@ -206,10 +207,12 @@ class Harness:
         self.data_dir = Path(tmp_path) / "data"
         self.settings = settings
         self.sites = sites
+        self.items = items  # watchlist.json "items"
         self.rt = self.new_runtime() if boot else None
 
     def _runtime(self) -> Runtime:
-        return Runtime(make_cfg(self.data_dir, sites=self.sites, **self.settings), fetcher=self.fetcher,
+        return Runtime(make_cfg(self.data_dir, items=self.items, sites=self.sites, **self.settings),
+                       fetcher=self.fetcher,
                        telegram=self.tg, notion=self.notion, clock=self.clock)
 
     def new_runtime(self) -> Runtime:
