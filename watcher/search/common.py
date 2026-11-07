@@ -126,6 +126,16 @@ def pick(candidates: list, matcher: Matcher, min_price=None, max_price=None, acc
     """The listing to track on one site: the cheapest in-stock listing whose title matches.
 
     Returns (best or None, [(candidate, verdict), ...] in page order)."""
+    # Search pages sometimes render the same listing more than once (or with tracking
+    # query strings). Collapse those before matching and ranking so duplicate cards do
+    # not distort the cheapest listing or accessory-price check.
+    unique = {}
+    for c in candidates:
+        key = (c.url or c.title).split("#", 1)[0].split("?", 1)[0].rstrip("/").casefold()
+        old = unique.get(key)
+        if old is None or (c.price is not None and (old.price is None or c.price < old.price)):
+            unique[key] = c
+    candidates = list(unique.values())
     verdict: dict[int, str] = {}
     matched = []
     for c in candidates:

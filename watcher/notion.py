@@ -61,6 +61,7 @@ SCHEMAS = {
         "Site": {"select": {"options": []}},
         "Status": {"select": _choices(("Active", "green"), ("Ended", "gray"), ("Sold out", "red"))},
         "Price": NUMBER,
+        "Previous price": NUMBER,
         "Was": NUMBER,
         "Store discount": PERCENT,
         "Below usual": PERCENT,
@@ -305,7 +306,7 @@ class NotionClient:
             return round(pct / 100, 4) if pct else None
         return {
             "Item": rec.get("item"), "Site": rec.get("site"), "Status": rec.get("status"),
-            "Price": rec.get("price"), "Was": rec.get("was"),
+            "Price": rec.get("price"), "Previous price": rec.get("previous_price"), "Was": rec.get("was"),
             "Store discount": fraction(rec.get("store_discount")), "Below usual": fraction(rec.get("vs_usual")),
             "Target": rec.get("target"), "Usual price": rec.get("usual"), "Lowest seen": rec.get("lowest"),
             "Real discount": rec.get("real"), "Why": rec.get("why") or [], "In stock": rec.get("in_stock"),

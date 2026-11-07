@@ -12,7 +12,8 @@ ENGLISH_PREFIX = ("amazon.eg", "amazon.ae", "amazon.sa")
 
 
 def search_url(site, query: str) -> str:
-    path = "/-/en/s" if site.host.endswith(ENGLISH_PREFIX) else "/s"
+    # Amazon Egypt's working Playwright flow uses /s?k=...; keep its exact route.
+    path = "/s" if site.host == "amazon.eg" else ("/-/en/s" if site.host.endswith(ENGLISH_PREFIX) else "/s")
     return f"{site.root}{path}?k={quote_plus(query)}"
 
 

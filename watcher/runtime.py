@@ -223,6 +223,10 @@ class Runtime:
                 if hasattr(self.notion, "read_sites"):
                     site_rows = self.notion.read_sites()
                     if site_rows:
+                        # The configured site list is the scope for this watcher. Notion
+                        # may contain stale or extra rows (e.g. Amazon US); don't search them.
+                        allowed = {site.key for site in load_sites(self.cfg.sites)[0]}
+                        site_rows = [row for row in site_rows if str(row.get("key", "")).lower() in allowed]
                         self.sites, self._site_problems = load_sites(site_rows)
                         self.notion.site_keys = [site.key for site in self.sites]
                 self.clear_warning("notion-read")

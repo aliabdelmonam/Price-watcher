@@ -16,7 +16,6 @@ DEFAULT_SITES = [
     "https://www.noon.com/egypt-en/",
     "https://www.amazon.eg/",
     "https://www.jumia.com.eg/",
-    "https://www.amazon.com/",
 ]
 AMAZON = {
     "amazon.eg": ("amazon_eg", "EGP"), "amazon.com": ("amazon_com", "USD"), "amazon.ae": ("amazon_ae", "AED"),

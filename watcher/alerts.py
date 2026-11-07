@@ -3,8 +3,7 @@
 A reading is a DEAL when the item is in stock and at least one of these holds:
   TARGET HIT   the price is at or below your target price
   ON SALE      the store's own 'was' price is at least store_discount_percent higher
-  PRICE DROP   the price is at least drop_percent_alert below what you usually see there
-               (the 14-day median; the first price seen until min_history_days of history)
+  PRICE DROP   the price is lower than the previously saved price/baseline
 With require_real_discount, ON SALE and PRICE DROP also need a YES verdict from your history.
 
 Every item on every site has a deal episode. It opens when the item becomes a deal and
@@ -32,11 +31,13 @@ LABELS = {
     "TARGET_HIT": ("🔥", "TARGET HIT"),
     "STORE_SALE": ("🏷", "ON SALE"),
     "BIG_DROP": ("📉", "PRICE DROP"),
+    "PRICE_DROP": ("📉", "PRICE DROP"),
     "EVEN_LOWER": ("⬇️", "EVEN LOWER"),
     "DEAL_ENDED": ("↩️", "DEAL ENDED"),
 }
-REASONS = {"TARGET_HIT": "TARGET HIT", "STORE_SALE": "ON SALE", "BIG_DROP": "PRICE DROP"}
-SIGNATURE = ("status", "price", "was", "in_stock", "why", "seller", "listing", "link", "target", "found")
+REASONS = {"TARGET_HIT": "TARGET HIT", "STORE_SALE": "ON SALE", "BIG_DROP": "PRICE DROP",
+           "PRICE_DROP": "PRICE DROP"}
+SIGNATURE = ("status", "price", "previous_price", "was", "in_stock", "why", "seller", "listing", "link", "target", "found")
 
 
 @dataclass
@@ -88,7 +89,8 @@ def assess(item: Item, r: Reading, snap: Snapshot, s) -> Verdict:
     reasons = []
     if at_target:
         reasons.append("TARGET_HIT")
-    if price is not None and (store_discount or 0) >= s.store_discount_percent:
+    if price is not None and store_discount is not None and store_discount > 0 \
+            and store_discount >= s.store_discount_percent:
         reasons.append("STORE_SALE")
     if vs_usual is not None and vs_usual >= s.drop_percent_alert:
         reasons.append("BIG_DROP")
@@ -101,6 +103,17 @@ def assess(item: Item, r: Reading, snap: Snapshot, s) -> Verdict:
 def decide(item: Item, r: Reading, st: ItemState, snap: Snapshot, s, now: float) -> Outcome:
     """Judge one OK reading, move the deal episode on, update `st`. Returns what to send/write."""
     v = assess(item, r, snap, s)
+    previous_price = st.last_price if st.last_in_stock and st.last_price is not None else None
+    # Keep the last undiscounted reading as the comparison point until price recovers.
+    # On first sight, the listing's own crossed-out price is a useful baseline too.
+    if v.price is not None:
+        if st.reference_price is None:
+            st.reference_price = max(previous_price or v.price, r.list_price or v.price)
+        elif v.price >= st.reference_price:
+            st.reference_price = v.price
+        if (v.price < st.reference_price and "BIG_DROP" not in v.reasons
+                and (not s.require_real_discount or v.real == "YES")):
+            v.reasons.append("PRICE_DROP")
     first = st.first_checked_at is None
     out = Outcome()
     deeper = 1 - s.deeper_drop_percent / 100
@@ -108,16 +121,17 @@ def decide(item: Item, r: Reading, st: ItemState, snap: Snapshot, s, now: float)
     if v.reasons:
         status = "Active"
         if st.deal_open:
-            if st.deal_alert_price and v.price <= st.deal_alert_price * deeper:
-                out.alert = Alert(item, r, snap, v, "EVEN_LOWER", previous_price=st.deal_alert_price)
+            if st.deal_alert_price and v.price < st.deal_alert_price * deeper:
+                out.alert = Alert(item, r, snap, v, "EVEN_LOWER", previous_price=previous_price)
                 st.deal_alert_price = v.price
         else:
             back_soon = (st.deal_closed_at is not None and st.deal_alert_price is not None
                          and now - st.deal_closed_at < s.repeat_after_hours * 3600
-                         and v.price > st.deal_alert_price * deeper)
+                         and v.price >= st.deal_alert_price * deeper)
             st.deal_open, st.deal_closed_at = True, None
             if not back_soon:  # a new deal (a deal back soon at the same price reopens quietly)
-                out.alert = Alert(item, r, snap, v, "ALREADY_ON_SALE" if first else v.reasons[0])
+                out.alert = Alert(item, r, snap, v, "ALREADY_ON_SALE" if first else v.reasons[0],
+                                  previous_price=previous_price)
                 st.deal_alert_price, st.deal_started_at = v.price, now
         st.deal_reasons = list(v.reasons)
     elif st.deal_open:
@@ -147,8 +161,9 @@ def deal_record(item: Item, r: Reading, snap: Snapshot, v: Verdict, st: ItemStat
     return {
         "key": item.id, "item": item.name, "site": item.store, "status": status,
         "price": r.price if r.price is not None else st.last_price, "was": r.list_price,
+        "previous_price": st.last_price if st.last_in_stock else None,
         "currency": r.currency or item.currency,
-        "store_discount": round(v.store_discount, 1) if v.store_discount and v.store_discount >= 1 else None,
+        "store_discount": round(v.store_discount, 1) if v.store_discount and v.store_discount > 0 else None,
         "vs_usual": round(v.vs_usual, 1) if v.vs_usual and v.vs_usual > 0 else None,
         "target": item.target_price, "usual": round(snap.median, 2) if snap.median else None,
         "lowest": min(seen) if seen else None, "real": v.real,
@@ -169,11 +184,11 @@ def format_alert(a: Alert) -> str:
         lines.append(esc(item.url))
         return "\n".join(lines)
     price_line = f"<b>{money(v.price)} {cur}</b>"
-    if v.store_discount and v.store_discount >= 1:
-        price_line += f" (was {money(r.list_price)}, -{v.store_discount:.0f}%)"
+    if v.store_discount and v.store_discount > 0:
+        price_line += f" (was {money(r.list_price)}, -{v.store_discount:.1f}%)"
     lines.append(price_line)
-    if a.headline == "EVEN_LOWER" and a.previous_price:
-        lines.append(f"Down from {money(a.previous_price)} in the last alert")
+    if a.previous_price is not None:
+        lines.append(f"Previous saved price: {money(a.previous_price)}")
     if item.target_price is not None:
         lines.append(f"Your target: {money(item.target_price)} " + ("✅" if v.at_target else "(not reached)"))
     if v.reasons:

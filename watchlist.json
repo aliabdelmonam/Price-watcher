@@ -9,10 +9,10 @@
       "11:50-12:30"
     ],
     "timezone": "Africa/Cairo",
-    "store_discount_percent": 10,
+    "store_discount_percent": 0.0,
     "drop_percent_alert": 15,
     "require_real_discount": false,
-    "deeper_drop_percent": 5,
+    "deeper_drop_percent": 0.0,
     "repeat_after_hours": 24,
     "notify_deal_ended": false,
     "exclude_words": [],

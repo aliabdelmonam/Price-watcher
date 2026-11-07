@@ -36,14 +36,14 @@ You list the products you want by **name** in Notion, and the **sites** to look 
 Every 5 minutes, for each item on each site, the crawler searches, keeps the listings whose title matches, and takes the cheapest one in stock. That listing is a **deal** if any of these is true:
 
 - **TARGET HIT:** it's at or below your `Target price`.
-- **ON SALE:** the site shows its own "was" price at least 10% higher.
-- **PRICE DROP:** it's at least 15% below what *you* have seen on that site (your 14-day history). This catches sales the store doesn't label.
+- **ON SALE:** the site shows its own "was" price higher than the current price.
+- **PRICE DROP:** the current price is lower than the last saved price for that item and site. This catches sales the store doesn't label.
 
 Every alert also says whether the discount is **real**: compared with your own history, not the store's possibly inflated "was" price.
 
 **No repeats, by design.** Each item on each site has one deal at a time:
 
-- **Telegram:** one message when the deal starts. Another only if the price drops a further 5% below the last message ("⬇️ EVEN LOWER").
+- **Telegram:** one message when the deal starts. Another when the price falls further to a new lower price ("⬇️ EVEN LOWER").
 - **Notion:** one row in **Deals** per item per site, created at its first deal and then **updated in place**: price, was-price, discount, status Active / Ended / Sold out.
 - **Same deal back:** if a deal ends and returns within 24 hours at the same price, the row goes back to Active quietly, with no new message.
 - **Nothing changed:** no Notion write and no message. Running every 5 minutes for days, restarting the laptop, or running it from a scheduler never repeats anything. Even warnings are sent once.
@@ -133,11 +133,11 @@ From Telegram: `/add soundcore r60i nc` adds a row without a target price. The w
 
 ### What you get: the Deals database
 
-One row per item per site that has had a deal: Item, Site, **Status** (Active / Ended / Sold out), **Price**, **Was** (the store's old price), **Store discount** (%), **Below usual** (% under your 14-day history), Target, Usual price, Lowest seen, **Real discount** (YES / NO / TOO EARLY), **Why** (TARGET HIT, ON SALE, PRICE DROP), In stock, Seller, Listing (the store's title), **Link**, Found, Updated. Filter on Status = Active to see what's on sale right now.
+One row per item per site that has had a deal: Item, Site, **Status** (Active / Ended / Sold out), **Price**, **Previous price**, **Was** (the store's old price), **Store discount** (%), **Below usual** (% under your 14-day history), Target, Usual price, Lowest seen, **Real discount** (YES / NO / TOO EARLY), **Why** (TARGET HIT, ON SALE, PRICE DROP), In stock, Seller, Listing (the store's title), **Link**, Found, Updated. Filter on Status = Active to see what's on sale right now.
 
 ### Sites: the Sites database in Notion
 
-One row per store. **Name** and **URL** are required. Check **Enabled** to search a site; clear it to pause that site. **Currency** is optional and is inferred from known store URLs when possible. The initial rows are copied from `watchlist.json` the first time you run `setup_notion.py`. Add or pause sites from your phone. `watchlist.json` provides the local fallback if Notion is unavailable.
+One row per configured store. **Name** and **URL** are required. Check **Enabled** to search a site; clear it to pause that site. **Currency** is optional and is inferred from known store URLs when possible. The initial rows are copied from `watchlist.json` the first time you run `setup_notion.py`. Enable or pause configured sites from your phone; add new sites to `watchlist.json` first. `watchlist.json` provides the local fallback if Notion is unavailable.
 
 How sites work:
 
@@ -251,7 +251,7 @@ Drills by Nov 10:
 |---|---|
 | 🏷 ALREADY ON SALE | the first time an item is found on a site, it's already a deal |
 | 🔥 TARGET HIT / 🏷 ON SALE / 📉 PRICE DROP | a new deal starts (the headline is its main reason) |
-| ⬇️ EVEN LOWER | during a deal, the price fell another 5% below the last message |
+| ⬇️ EVEN LOWER | during a deal, the price fell below the last notified price |
 | ↩️ DEAL ENDED | only with `"notify_deal_ended": true`; otherwise Notion shows Ended / Sold out |
 | ⚠️ CAN'T SEARCH / CAN'T READ | a site or page failed 3 checks in a row (once); ✅ when it works again |
 | ⚠️ SUSPICIOUS PRICE | under 20% or over 300% of the usual price: not trusted, check it yourself |
@@ -266,10 +266,10 @@ Drills by Nov 10:
 | setting | default | |
 |---|---|---|
 | search_interval_seconds / interval_seconds | 300 / 300 | how often items are searched / tracked links are read |
-| store_discount_percent | 10 | a site's "was" price this much higher = ON SALE |
-| drop_percent_alert | 15 | PRICE DROP threshold vs your history |
+| store_discount_percent | 0 | any positive difference from the site's "was" price = ON SALE |
+| drop_percent_alert | 15 | labels a drop vs your history as a strong discount; any drop from the last saved price can still alert |
 | require_real_discount | false | true: ON SALE and PRICE DROP also need a YES verdict |
-| deeper_drop_percent | 5 | a further drop of this much sends ⬇️ EVEN LOWER |
+| deeper_drop_percent | 0 | any further price drop sends ⬇️ EVEN LOWER |
 | repeat_after_hours | 24 | a deal back within this, at the same price or higher, is not sent again |
 | notify_deal_ended | false | also message when a deal ends |
 | exclude_words, match_min_ratio | `[]`, 1.0 | matching for every item |

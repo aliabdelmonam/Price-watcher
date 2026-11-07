@@ -21,6 +21,7 @@ class ItemState:
     last_check_at: float | None = None
     last_ok_at: float | None = None
     last_price: float | None = None
+    reference_price: float | None = None  # prior baseline retained until the price recovers
     last_list_price: float | None = None
     last_in_stock: bool | None = None
     last_seller: str | None = None

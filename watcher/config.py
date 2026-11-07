@@ -73,14 +73,14 @@ class Settings:
     burst_windows: list = field(default_factory=lambda: ["23:50-01:30", "11:50-12:30"])
     timezone: str = "Africa/Cairo"
     # what counts as a deal
-    store_discount_percent: float = 10       # the store's own 'was' price this much higher = on sale
+    store_discount_percent: float = 0.0       # any reduction from the store's own 'was' price = on sale
     drop_percent_alert: float = 15           # this much below the usual price = price drop
     require_real_discount: bool = False      # sales and drops above your target need a YES verdict
     real_discount_percent: float = 10        # "real" = at least this far below the 14-day median
     min_history_days: float = 3              # before this, compare with the first price seen
     median_days: float = 14
     # when you hear about a deal again (never for the same deal at the same price)
-    deeper_drop_percent: float = 5           # a further drop of this much is a new message
+    deeper_drop_percent: float = 0.0         # any distinct lower price is a new message
     repeat_after_hours: float = 24           # a deal back within this, same price or higher: quiet
     notify_deal_ended: bool = False          # also message when a deal ends (Notion always shows it)
     # search mode
